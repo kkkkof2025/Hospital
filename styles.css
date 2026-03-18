@@ -416,6 +416,7 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  touch-action: none;
 }
 
 .lab-machines {
@@ -535,6 +536,11 @@ body {
   font-size: 14px;
   font-weight: 700;
   color: rgba(0, 0, 0, 0.7);
+}
+
+.tube.tube-hover {
+  outline: 3px solid rgba(76, 199, 255, 0.65);
+  outline-offset: 2px;
 }
 
 .tube::before {

@@ -122,6 +122,13 @@ const CARD_DATA = [
   },
 ];
 
+const DROP_TUNING = {
+  padding: 14,
+  paddingCoarse: 26,
+  minOverlapRatio: 0.18,
+  minOverlapRatioCoarse: 0.12,
+};
+
 let audioContext = null;
 let memoryInterval = null;
 let memoryTimer = null;
@@ -132,6 +139,7 @@ let cards = [];
 let score = 0;
 let gameRunning = false;
 let gameStartTime = 0;
+let hoveredTube = null;
 
 function showScreen(name) {
   Object.entries(screens).forEach(([key, screen]) => {
@@ -146,6 +154,109 @@ function showScreen(name) {
 function setBar(fillEl, remainingMs, totalMs) {
   const ratio = Math.max(0, Math.min(1, remainingMs / totalMs));
   fillEl.style.width = `${ratio * 100}%`;
+}
+
+function isCoarsePointer(event) {
+  if (event && typeof event.pointerType === "string") {
+    return event.pointerType !== "mouse";
+  }
+  if (window.matchMedia) {
+    return window.matchMedia("(pointer: coarse)").matches;
+  }
+  return false;
+}
+
+function getDropConfig(event) {
+  const coarse = isCoarsePointer(event);
+  return {
+    padding: coarse ? DROP_TUNING.paddingCoarse : DROP_TUNING.padding,
+    minOverlapRatio: coarse ? DROP_TUNING.minOverlapRatioCoarse : DROP_TUNING.minOverlapRatio,
+  };
+}
+
+function expandRect(rect, padding) {
+  return {
+    left: rect.left - padding,
+    right: rect.right + padding,
+    top: rect.top - padding,
+    bottom: rect.bottom + padding,
+  };
+}
+
+function getOverlapArea(rectA, rectB) {
+  const overlapX = Math.max(0, Math.min(rectA.right, rectB.right) - Math.max(rectA.left, rectB.left));
+  const overlapY = Math.max(0, Math.min(rectA.bottom, rectB.bottom) - Math.max(rectA.top, rectB.top));
+  return overlapX * overlapY;
+}
+
+function getRectCenter(rect) {
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+}
+
+function isPointInRect(point, rect) {
+  return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function getPointerPoint(event, card) {
+  const x = typeof event.clientX === "number" ? event.clientX : card.lastPointerX;
+  const y = typeof event.clientY === "number" ? event.clientY : card.lastPointerY;
+  if (typeof x === "number" && typeof y === "number") {
+    return { x, y };
+  }
+  return null;
+}
+
+function setHoveredTube(nextTube) {
+  if (hoveredTube === nextTube) return;
+  if (hoveredTube) hoveredTube.classList.remove("tube-hover");
+  hoveredTube = nextTube;
+  if (hoveredTube) hoveredTube.classList.add("tube-hover");
+}
+
+function getTubeForCard(card, point, event) {
+  const config = getDropConfig(event);
+  const cardRect = card.el.getBoundingClientRect();
+  const cardArea = cardRect.width * cardRect.height;
+  const cardCenter = getRectCenter(cardRect);
+  const candidates = [];
+
+  for (const tube of tubes) {
+    const tubeRect = tube.getBoundingClientRect();
+    const expandedRect = expandRect(tubeRect, config.padding);
+    const overlap = getOverlapArea(cardRect, expandedRect);
+    const pointerInside = point ? isPointInRect(point, expandedRect) : false;
+    const centerInside = isPointInRect(cardCenter, expandedRect);
+    const tubeCenter = getRectCenter(tubeRect);
+    const centerDistance = Math.hypot(cardCenter.x - tubeCenter.x, cardCenter.y - tubeCenter.y);
+
+    if (overlap > 0 || pointerInside || centerInside) {
+      candidates.push({
+        tube,
+        overlap,
+        pointerInside,
+        centerInside,
+        centerDistance,
+      });
+    }
+  }
+
+  if (!candidates.length) return null;
+
+  const minOverlap = cardArea * config.minOverlapRatio;
+  const overlapMatch = candidates
+    .filter((item) => item.overlap >= minOverlap)
+    .sort((a, b) => b.overlap - a.overlap)[0];
+
+  if (overlapMatch) return overlapMatch.tube;
+
+  const insideMatch = candidates
+    .filter((item) => item.pointerInside || item.centerInside)
+    .sort((a, b) => a.centerDistance - b.centerDistance)[0];
+
+  return insideMatch ? insideMatch.tube : null;
 }
 
 function initAudio() {
@@ -295,6 +406,8 @@ function spawnCard() {
     dragging: false,
     offsetX: 0,
     offsetY: 0,
+    lastPointerX: null,
+    lastPointerY: null,
   };
 
   cardEl.addEventListener("pointerdown", (event) => startDrag(event, card));
@@ -308,29 +421,49 @@ function spawnCard() {
 
 function startDrag(event, card) {
   if (!gameRunning) return;
+  event.preventDefault();
   card.dragging = true;
   card.el.classList.add("dragging");
-  card.el.setPointerCapture(event.pointerId);
+  if (card.el.setPointerCapture && typeof event.pointerId === "number") {
+    card.el.setPointerCapture(event.pointerId);
+  }
 
   const rect = fallArea.getBoundingClientRect();
   card.offsetX = event.clientX - rect.left - card.x;
   card.offsetY = event.clientY - rect.top - card.y;
+  card.lastPointerX = event.clientX;
+  card.lastPointerY = event.clientY;
 }
 
 function dragMove(event, card) {
   if (!card.dragging) return;
+  event.preventDefault();
   const rect = fallArea.getBoundingClientRect();
   card.x = event.clientX - rect.left - card.offsetX;
   card.y = event.clientY - rect.top - card.offsetY;
   updateCardPosition(card);
+  card.lastPointerX = event.clientX;
+  card.lastPointerY = event.clientY;
+  const point = getPointerPoint(event, card);
+  setHoveredTube(getTubeForCard(card, point, event));
 }
 
 function endDrag(event, card) {
   if (!card.dragging) return;
+  event.preventDefault();
   card.dragging = false;
   card.el.classList.remove("dragging");
+  if (card.el.releasePointerCapture && typeof event.pointerId === "number") {
+    try {
+      card.el.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore if pointer capture was not set.
+    }
+  }
 
-  const tube = getTubeAtPoint(event.clientX, event.clientY);
+  const point = getPointerPoint(event, card);
+  const tube = getTubeForCard(card, point, event);
+  setHoveredTube(null);
   if (tube) {
     const tubeColor = tube.dataset.color;
     if (tubeColor === card.color) {
@@ -362,16 +495,6 @@ function handleFail(card, tube) {
 function flashTube(tube, className) {
   tube.classList.add(className);
   setTimeout(() => tube.classList.remove(className), 260);
-}
-
-function getTubeAtPoint(x, y) {
-  for (const tube of tubes) {
-    const rect = tube.getBoundingClientRect();
-    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-      return tube;
-    }
-  }
-  return null;
 }
 
 function removeCard(card) {
@@ -422,6 +545,7 @@ function endGame() {
   if (!gameRunning) return;
   gameRunning = false;
   clearAllTimers();
+  setHoveredTube(null);
   cards.forEach((card) => card.el.remove());
   cards = [];
 
@@ -445,6 +569,7 @@ function clearAllTimers() {
   if (spawnTimeout) clearTimeout(spawnTimeout);
   if (animationFrame) cancelAnimationFrame(animationFrame);
   gameRunning = false;
+  setHoveredTube(null);
   memoryInterval = null;
   memoryTimer = null;
   gameTimer = null;
